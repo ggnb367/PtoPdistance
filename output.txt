@@ -1,0 +1,284 @@
+运行test_2，运用最初的并行pll，所有border的代表图
+[INFO] Graph: Pubmed, |V|=19717, |E|=44324
+[INFO] #final_clusters = 86, Top-10 sizes: [(36, 839), (22, 809), (68, 736), (42, 706), (64, 678), (48, 637), (20, 624), (6, 613), (84, 590), (59, 571)]
+Clusters (parallel PLL): 100%|██████████████████████████████████| 86/86 [00:08<00:00,  9.77cluster/s]
+Building PLL: 100%|████████████████████████████████████████████| 6594/6594 [02:31<00:00, 43.45node/s]
+[INFO] Hybrid build done in 161.846s. G_out: |V|=6594, |E|=575043
+Building PLL: 100%|██████████████████████████████████████████| 19717/19717 [44:07<00:00,  7.45node/s]
+
+=== Evaluation ===
+                      method build_time_sec  query_time_sec  samples  exact_matches   mae
+                    Full-PLL    2647.074284        0.027715      500            500 0.000
+Hybrid(leaf-PLL + G_out-PLL)       prebuilt        0.085585      500            400 0.268
+
+
+
+(torch-mps) liguangcan@liguangcandeMacBook-Pro-2 ptop % python test5.py    
+[INFO] Graph: Pubmed, |V|=19717, |E|=44324
+Clusters (parallel PLL): 100%|███████████████████████| 86/86 [00:08<00:00,  9.68cluster/s]
+Building PLL: 100%|█████████████████████████████████| 6594/6594 [02:57<00:00, 37.21node/s]
+Hybrid C2: per-source Dijkstra (TopK per (S,B)): 100%|█| 86/86 [00:17<00:00,  4.83cluster/
+Build node→USED-boundary arrays: 100%|███████████████| 86/86 [00:07<00:00, 11.51cluster/s]
+Hybrid D: Potentials per target: 100%|███████████████| 86/86 [00:17<00:00,  4.98cluster/s]
+Build node→USED-boundary arrays: 100%|███████████████| 86/86 [00:06<00:00, 12.47cluster/s]
+[INFO] #final_clusters = 86, Top-10 sizes: [(36, 839), (22, 809), (68, 736), (42, 706), (64, 678), (48, 637), (20, 624), (6, 613), (84, 590), (59, 571)]
+[INFO] G_out: |V|=6594, |E|=575043
+
+=== Build Time Breakdown ===
+                                        Step  Time (sec)
+              Inside PLL (sum over clusters)    0.862694
+                Build G_out (boundary graph)    0.352127
+        Outside PLL on G_out  [A] (deg-desc)  177.220760
+                  Virtual graph build  [B/C]    0.716601
+              All cluster-pair shortest  [B]   63.178524
+C (new): per-source Dijkstra (TopK_AB, k=16)   19.457240
+    C (new): Build node→USED-boundary arrays    8.684366
+     D: Potentials per target (multi-source)   19.095727
+             D: Build node→TopK(u) (topk=16)    2.647580
+              E: Select TopK_AB pairs (k=16)    0.187026
+          E: Build node→USED-boundary arrays    8.398673
+             E: Build node→TopK(u) (topk=16)    2.647580
+                               Total Build A  178.435581
+                               Total Build B   65.109945
+                               Total Build C   30.073027
+                               Total Build D   22.958128
+                               Total Build E   31.543827
+
+=== Storage Summary (payload-only, rough) ===
+                           Component   Count Payload (MiB)
+                   Inside PLL labels  323673      4.94 MiB
+                         G_out nodes    6594      0.10 MiB
+                         G_out edges  575043     13.16 MiB
+             Outside PLL labels  [A] 1816803     27.72 MiB
+           Cluster-pair records  [B]    3655      0.08 MiB
+C(new): Kept (A,B) entries (TopK_AB)   90440      2.07 MiB
+  C(new): Node→USED-boundary entries 2851390     21.75 MiB
+         D: Potentials entries (b→B)  567084      8.65 MiB
+   D: Node→TopK(u) entries (topk=16)  309130      4.72 MiB
+       E: Node→USED-boundary entries 2722884     20.77 MiB
+       E: Kept (A,B) pairs (TopK_AB)   90440              
+   E: Node→TopK(u) entries (topk=16)  309130      4.72 MiB
+                  Total payload  [A]             45.92 MiB
+                  Total payload  [B]             18.28 MiB
+                  Total payload  [C]             42.03 MiB
+                  Total payload  [D]             31.57 MiB
+                  Total payload  [E]             43.69 MiB
+
+=== Evaluation (A vs B vs C(new) vs D(original) vs E) ===
+                                                 method  query_time_sec  samples  exact_matches   mae
+                        Hybrid A (leaf-PLL + G_out-PLL)        0.089406      500            410 0.262
+                        Hybrid B (Virtual-Source Pairs)        0.001430      500             43 4.098
+   Hybrid C (per-source Dijkstra TopK_AB + USED arrays)        0.002717      500            143 1.600
+  Hybrid D (original: potentials + TopK(u) + right-PLL)        0.012052      500            191 1.164
+Hybrid E (Mixed: TopK_pairs ∪ TopK(u) + reusing tables)        0.006484      500            202 1.056
+
+
+
+两种alt比较
+(torch-mps) liguangcan@liguangcandeMacBook-Pro-2 ptop % python alt.py
+[INFO] Loaded PubMed via PyG: n=19717 m=44324
+=== Evaluation (ALT A vs ALT B) ===
+
+method                                  query_time_sec   samples   exact_matches     mae
+ALT-A (uni, farthest, subset)                 0.060707       500             500   0.000
+ALT-B (bidir, top-degree, all)                0.021252       500             304   0.494
+
+
+
+1500的情况下不完全查表test5
+[INFO] Graph: Pubmed, |V|=19717, |E|=44324
+Clusters (parallel PLL): 100%|████████████████████████████████████████████████████████| 86/86 [00:08<00:00,  9.87cluster/s]
+Building PLL: 100%|██████████████████████████████████████████████████████████████████| 6594/6594 [02:50<00:00, 38.70node/s]
+Hybrid C2: per-source Dijkstra (TopK per (S,B)): 100%|████████████████████████████████| 86/86 [00:16<00:00,  5.07cluster/s]
+Build node→USED-boundary arrays: 100%|████████████████████████████████████████████████| 86/86 [00:07<00:00, 12.15cluster/s]
+Hybrid D: Potentials per target: 100%|████████████████████████████████████████████████| 86/86 [00:16<00:00,  5.27cluster/s]
+Build node→USED-boundary arrays: 100%|████████████████████████████████████████████████| 86/86 [00:07<00:00, 11.48cluster/s]
+[INFO] #final_clusters = 86, Top-10 sizes: [(36, 839), (22, 809), (68, 736), (42, 706), (64, 678), (48, 637), (20, 624), (6, 613), (84, 590), (59, 571)]
+[INFO] G_out: |V|=6594, |E|=575043
+
+=== Build Time Breakdown ===
+                                        Step  Time (sec)
+              Inside PLL (sum over clusters)    0.876906
+                Build G_out (boundary graph)    0.354041
+        Outside PLL on G_out  [A] (deg-desc)  170.373966
+                  Virtual graph build  [B/C]    0.697740
+              All cluster-pair shortest  [B]   61.468652
+C (new): per-source Dijkstra (TopK_AB, k=16)   18.683013
+    C (new): Build node→USED-boundary arrays    8.269791
+     D: Potentials per target (multi-source)   17.961978
+             D: Build node→TopK(u) (topk=16)    2.572460
+              E: Select TopK_AB pairs (k=16)    0.172845
+          E: Build node→USED-boundary arrays    8.599765
+             E: Build node→TopK(u) (topk=16)    2.572460
+                               Total Build A  171.604913
+                               Total Build B   63.397339
+                               Total Build C   28.881491
+                               Total Build D   21.765385
+                               Total Build E   30.537995
+
+=== Storage Summary (payload-only, rough) ===
+                           Component   Count Payload (MiB)
+                   Inside PLL labels  323673      4.94 MiB
+                         G_out nodes    6594      0.10 MiB
+                         G_out edges  575043     13.16 MiB
+             Outside PLL labels  [A] 1816803     27.72 MiB
+           Cluster-pair records  [B]    3655      0.08 MiB
+C(new): Kept (A,B) entries (TopK_AB)   90440      2.07 MiB
+  C(new): Node→USED-boundary entries 2851390     21.75 MiB
+         D: Potentials entries (b→B)  567084      8.65 MiB
+   D: Node→TopK(u) entries (topk=16)  309130      4.72 MiB
+       E: Node→USED-boundary entries 2722884     20.77 MiB
+       E: Kept (A,B) pairs (TopK_AB)   90440              
+   E: Node→TopK(u) entries (topk=16)  309130      4.72 MiB
+                  Total payload  [A]             45.92 MiB
+                  Total payload  [B]             18.28 MiB
+                  Total payload  [C]             42.03 MiB
+                  Total payload  [D]             31.57 MiB
+                  Total payload  [E]             43.69 MiB
+
+=== Evaluation (A vs B vs C(new) vs D(original) vs E) ===
+                                                 method  query_time_sec  samples  exact_matches      mae
+                        Hybrid A (leaf-PLL + G_out-PLL)        0.260374     1500           1210 0.254000
+                        Hybrid B (Virtual-Source Pairs)        0.004019     1500            130 3.992667
+   Hybrid C (per-source Dijkstra TopK_AB + USED arrays)        0.007214     1500            465 1.560000
+  Hybrid D (original: potentials + TopK(u) + right-PLL)        0.030201     1500            597 1.209333
+Hybrid E (Mixed: TopK_pairs ∪ TopK(u) + reusing tables)        0.018178     1500            633 1.118000
+
+
+
+纯查表，感觉不如之前
+(torch-mps) liguangcan@liguangcandeMacBook-Pro-2 ptop % python topkce.py
+[INFO] Graph: Pubmed, |V|=19717, |E|=44324
+Clusters (parallel PLL): 100%|████████████████████████████████████████████████████████| 86/86 [00:09<00:00,  9.33cluster/s]
+Building PLL: 100%|██████████████████████████████████████████████████████████████████| 6594/6594 [02:56<00:00, 37.33node/s]
+Hybrid C2: per-source Dijkstra (TopK per (S,B)): 100%|████████████████████████████████| 86/86 [00:17<00:00,  4.95cluster/s]
+Build node→USED-boundary arrays: 100%|████████████████████████████████████████████████| 86/86 [00:07<00:00, 11.80cluster/s]
+Hybrid D: Potentials per target: 100%|████████████████████████████████████████████████| 86/86 [00:16<00:00,  5.21cluster/s]
+E: Build node→ALL-boundary arrays: 100%|██████████████████████████████████████████████| 86/86 [00:07<00:00, 11.38cluster/s]
+[INFO] #final_clusters = 86, Top-10 sizes: [(36, 839), (22, 809), (68, 736), (42, 706), (64, 678), (48, 637), (20, 624), (6, 613), (84, 590), (59, 571)]
+
+=== Build Time Breakdown ===
+                                           Step  Time (sec)
+                 Inside PLL (sum over clusters)    0.947408
+                   Build G_out (boundary graph)    0.358422
+           Outside PLL on G_out  [A] (deg-desc)  176.665621
+                     Virtual graph build  [B/C]    0.713960
+                 All cluster-pair shortest  [B]   61.939386
+   C (new): per-source Dijkstra (TopK_AB, k=16)   18.888771
+       C (new): Build node→USED-boundary arrays    8.480122
+        D: Potentials per target (multi-source)   18.299419
+                D: Build node→TopK(u) (topk=16)    2.636395
+   E(two-table): Build node→ALL-boundary arrays    8.551735
+E(two-table): Build AB mid-TopK from potentials    0.000000
+                                  Total Build A  177.971452
+                                  Total Build B   63.959177
+                                  Total Build C   29.388684
+                                  Total Build D   22.241644
+                       Total Build E(two-table)   28.156984
+
+=== Storage Summary (payload-only, rough) ===
+                              Component   Count Payload (MiB)
+                      Inside PLL labels  323673      4.94 MiB
+                            G_out nodes    6594      0.10 MiB
+                            G_out edges  575043     13.16 MiB
+                Outside PLL labels  [A] 1816803     27.72 MiB
+              Cluster-pair records  [B]    3655      0.08 MiB
+   C(new): Kept (A,B) entries (TopK_AB)   90440      2.07 MiB
+     C(new): Node→USED-boundary entries 2851390     21.75 MiB
+            D: Potentials entries (b→B)  567084      8.65 MiB
+      D: Node→TopK(u) entries (topk=16)  309130      4.72 MiB
+E(two-table): Node→ALL-boundary entries 3075909     23.47 MiB
+         E(two-table): AB mid-TopK kept   91504      2.09 MiB
+                     Total payload  [A]             45.92 MiB
+                     Total payload  [B]             18.28 MiB
+                     Total payload  [C]             42.03 MiB
+                     Total payload  [D]             31.57 MiB
+          Total payload  [E(two-table)]             43.76 MiB
+
+=== Evaluation (A vs B vs C(new-used-only) vs D(original) vs E(two-table FIXED)) ===
+                                                               method  query_time_sec  samples  exact_matches      mae
+                                      Hybrid A (leaf-PLL + G_out-PLL)        0.273753     1500           1231 0.243333
+                                      Hybrid B (Virtual-Source Pairs)        0.004375     1500            101 4.039333
+     Hybrid C (TopK_AB routes + USED-arrays for used boundaries only)        0.007865     1500            409 1.662000
+                Hybrid D (original: potentials + TopK(u) + right-PLL)        0.030473     1500            595 1.189333
+Hybrid E (Two-Table FIXED: u-TopK(16) × mid-TopK(16) + table lookups)        0.021299     1500            597 1.184667
+
+
+
+WN18 40943+151442
+抽象后：|V|=192376, |E|=302866
+
+(torch-mps) liguangcan@liguangcandeMacBook-Pro-2 ptop % python alt.py --kg_file ./data/WN18.txt --samples 500
+
+[INFO] Loaded WN18(rel-nodes, weighted): n=192322 m=302810 (undirected)
+=== Weighted ALT on WN18 (entity+relation nodes) ===
+
+method                                  query_time_sec   samples   exact_matches         mae
+ALT-A (uni, farthest, subset)                 0.164700       500             500    0.000000
+ALT-B (bidir, top-degree, all)                0.043113       500             328    0.528000
+
+[INFO] #final_clusters = 745, Top-10 sizes: [(403, 1199), (280, 1189), (185, 1164), (680, 1149), (68, 1130), (3, 1117), (10, 1117), (113, 1115), (308, 1114), (276, 1071)]
+
+=== Entities→Entities Evaluation (E method) ===
+                                          method  query_time_sec  samples  exact_matches   mae
+E (entities-only sampling, u-TopK=8, mid-TopK=8)        0.009464      500            180 1.582
+                                 method  query_time_sec  samples  exact_matches   mae  preprocessing_time
+E (entities-only, u-TopK=8, mid-TopK=8)         0.00882      500            168 1.664          871.044878
+
+
+[INFO] Graph: WN18(WN50k.txt)-rel_nodes, |V|=87972, |E|=106096, REL_nodes=53048
+=== Entities→Entities Evaluation (E method) ===
+                                 method  query_time_sec  samples  exact_matches   mae  preprocessing_time
+E (entities-only, u-TopK=8, mid-TopK=8)        0.007178      500            231 1.944          138.547716
+method                                  query_time_sec   samples   exact_matches         mae
+pre processing_time                           2.949573                                      
+ALT-A (uni, farthest, subset)                 0.065262       500             500    0.000000
+ALT-B (bidir, top-degree, all)                0.018902       500             313    0.760000
+=== Evaluation (G-Tree tables) ===
+                                                                method  build_time_sec  query_time_sec  samples  exact_matches   mae
+G-Tree (parents=ALT, leaf=PLL, precomputed leaf→ancestor + root Top-K)      128.139074        0.012783      500            154 2.884
+
+
+#深度研究干的
+=== Evaluation on Global LCC (Entities→Entities) ===
+ lcc_nodes  lcc_edges  query_time_sec  samples  returned  inf_count  exact_matches  mae  preprocessing_time
+    192322     302810        2.688313       50        50          0              2  7.5           41.641315
+#把闭包换成星星之后干的
+=== Evaluation on Global LCC (Entities→Entities) ===
+ lcc_nodes  lcc_edges  query_time_sec  samples  returned  inf_count  exact_matches   mae  preprocessing_time
+    192322     302810       12.595661      200       200          0             46 1.775           23.824796
+
+
+
+更换了新版的知识图谱处理方式，如下：
+把每条三元组 (h,r,t) 的“关系节点”整体收缩为实体–实体的一条边，用该对实体上所有关系的最小代价作为边权（默认 1.0），同时把全部关系类型与其权重作为边属性保存（rels, w_by_rel, multi），
+这样既保持实体→实体最短距离与原法等价，又把图规模从“实体+海量关系节点”降为“纯实体图”，显著加速分簇、PLL、E 方法两表构建与查询，同时不丢失多关系语义（保存在边元数据里，未来需要可启用关系约束/加罚）。
+
+不分层方法在WN18上：
+=== Entities→Entities Evaluation (E method) ===
+                                 method  query_time_sec  samples  exact_matches  mae  preprocessing_time
+E (entities-only, u-TopK=8, mid-TopK=8)        0.006889      500            139  2.1           96.121741
+
+分层方法：
+=== Evaluation on Global LCC (Entities→Entities) ===
+ lcc_nodes  lcc_edges  query_time_sec  samples  returned  inf_count  exact_matches   mae  preprocessing_time
+     40917      75756        0.423841      200       200          0             84 1.135           80.818846
+用原版的最慢分层（完全闭包）
+=== Evaluation on Global LCC (Entities→Entities) ===
+ lcc_nodes  lcc_edges  query_time_sec  samples  returned  inf_count  exact_matches  mae  preprocessing_time
+     40917      75756      124.804343       50        50          0             49 0.04         3998.938951
+
+现在引入ab表和same表之后的，来自于m1_leaf_check.py
+=== Table-only LCA Query Evaluation (SAME + AB, Vectorized) ===
+                       method  query_time_sec  samples  exact_matches   mae  inf_pred  preprocessing_time
+HierL-E (SAME+AB, vectorized)         0.03781      500            148 1.842         0          106.311877
+
+似乎在从LCA向下下沉中获得了更快的方案，而且还有提升的空间，来自于deepresearch.py
+=== Table-only LCA Query Evaluation (All-Table, strict lookup) ===
+                         method  query_time_sec  samples  exact_matches   mae  inf_pred  preprocessing_time
+HierL-E (all-table, vectorized)        0.005327      500            176 1.718         0          239.455113
+
+
+=== Table-only LCA Query Evaluation (All-Table, strict lookup) ===
+                         method  query_time_sec  samples  exact_matches  mae  inf_pred  preprocessing_time
+HierL-E (all-table, vectorized)        0.006279      500            166  1.7         0           57.010394
