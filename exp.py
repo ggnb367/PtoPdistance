@@ -210,12 +210,23 @@ def _build_supergraph_from_partition(G: nx.Graph, part: dict) -> nx.Graph:
         SG.add_edge(a, b, weight=float(w))
     return SG
 
+
+def _build_supergraph_from_level_sets(sub: nx.Graph, level_map: dict) -> tuple[nx.Graph, dict]:
+    """构建当前层的超图，并返回节点到超点的映射。"""
+    node2super = {}
+    for super_cid, node_set in level_map.items():
+        for n in node_set:
+            node2super[n] = super_cid
+    SG = _build_supergraph_from_partition(sub, node2super)
+    return SG, node2super
+
 def build_hierarchical_supergraph_tree(
     G: nx.Graph,
     base_resolution=0.3,
     base_max_cluster_size=2000,
     super_resolutions=(0.8, 0.6, 0.45, 0.3, 0.2),
-    super_max_cluster_size=10**9,
+    super_max_cluster_size=50,
+    supernode_threshold=50,
     seed=42,
 ):
     """
@@ -223,10 +234,11 @@ def build_hierarchical_supergraph_tree(
       - level=-1: CC 根（parent=None）
       - level=0 : 最底层叶簇（来自原图直接聚类）
       - level>=1: 通过超图递归聚类逐层向上合并（多叉，不限几叉）
-    返回: cluster_tree, node_to_leaf
+    返回: cluster_tree, node_to_leaf, hierarchy_levels
     """
     cluster_tree = {}
     node_to_leaf = {}
+    hierarchy_levels = defaultdict(list)
 
     comps = list(nx.connected_components(G))
     comps_sorted = sorted(comps, key=lambda s: -len(s))
@@ -235,95 +247,59 @@ def build_hierarchical_supergraph_tree(
         sub = G.subgraph(nodes).copy()
         cc_cid = ("cc", cc_id)
         cluster_tree[cc_cid] = dict(level=-1, parent=None, children=[], nodes=set(nodes))
+        hierarchy_levels[-1].append(cc_cid)
 
-        # 1) 原图底层聚类（得到 level 0）
         base_part = _leiden_partition_on_graph(
             sub, resolution=base_resolution, max_cluster_size=base_max_cluster_size, seed=seed
         )
-        # 组装 leaf 节点
         cid2nodes = defaultdict(list)
         for n, cid in base_part.items():
             cid2nodes[cid].append(n)
-        # 记录“本层簇id -> cluster_tree的叶cid”
-        cur_level_nodes = []   # 记录当前层的 cluster_tree cid 列表（作为下一层的“原子”）
-        local2leaf_cid = {}
+        cur_level_nodes = []
         for local_cid, nlist in cid2nodes.items():
             leaf_cid = ("leaf", cc_id, int(local_cid))
             cluster_tree[leaf_cid] = dict(level=0, parent=cc_cid, children=[], nodes=set(nlist))
             cluster_tree[cc_cid]["children"].append(leaf_cid)
             for n in nlist:
                 node_to_leaf[n] = leaf_cid
-            local2leaf_cid[local_cid] = leaf_cid
             cur_level_nodes.append(leaf_cid)
+            hierarchy_levels[0].append(leaf_cid)
 
-        # 2) 逐层构建超图并聚类（向上合并，直到只有1个超点或不能再合并）
-        #    我们需要维护“当前层的超点 -> 其包含的原始节点集合”
         cur_level_map = {leaf_cid: set(cluster_tree[leaf_cid]["nodes"]) for leaf_cid in cur_level_nodes}
         level = 1
-        # 针对每层给一个分辨率（不足就用最后一个）
         res_list = list(super_resolutions) if super_resolutions else [0.5]
-        while True:
-            # 构建“当前层的超图”
-            #   超点 = 当前层的 cluster_tree 节点（cur_level_map 的 key）
-            #   超边：如果原图中存在跨两个超点节点集合的边，则在超点之间连边
-            # 为了简单高效，用 node->supernode 的映射，再复用 _build_supergraph_from_partition
-            node2super = {}
-            for super_cid, node_set in cur_level_map.items():
-                for n in node_set:
-                    node2super[n] = super_cid
+        threshold = max(1, int(supernode_threshold))
+        while len(cur_level_map) > threshold:
+            SG, _ = _build_supergraph_from_level_sets(sub, cur_level_map)
 
-            # 如果只剩一个超点，无需再往上
-            if len(cur_level_map) <= 1:
-                break
-
-            # 构超图（注意：这里超点的“名字”我们直接用 cluster_tree 的 cid）
-            SG = nx.Graph()
-            SG.add_nodes_from(cur_level_map.keys())
-            cut_w = defaultdict(float)
-            for u, v in sub.edges():
-                su, sv = node2super.get(u), node2super.get(v)
-                if su is None or sv is None or su == sv:
-                    continue
-                a, b = (su, sv) if str(su) <= str(sv) else (sv, su)
-                cut_w[(a, b)] += 1.0
-            for (a, b), w in cut_w.items():
-                SG.add_edge(a, b, weight=float(w))
-
-            # 若超图没有边，无法再合并（说明底层簇之间已无跨边连接）
             if SG.number_of_edges() == 0:
                 break
 
-            # 在超图上做一次聚类
             res = res_list[min(level - 1, len(res_list) - 1)]
             part_super = _leiden_partition_on_graph(
                 SG, resolution=res, max_cluster_size=super_max_cluster_size, seed=seed + level
             )
 
-            # 如果没有产生实质合并（簇数不变），也结束
             groups = defaultdict(list)
             for super_node, gid in part_super.items():
                 groups[gid].append(super_node)
+
             if len(groups) >= len(cur_level_map):
                 break
 
-            # 生成本层 parent 节点，并连接 parent-children
             next_level_map = {}
             for gid, children_cids in groups.items():
-                # 父簇的节点集合 = 子簇包含的原始节点并集
                 nodes_union = set()
                 for ch in children_cids:
                     nodes_union.update(cur_level_map[ch])
 
                 parent_cid = ("par", cc_id, level, int(gid))
                 cluster_tree[parent_cid] = dict(level=level, parent=None, children=[], nodes=nodes_union)
-                # 找它的父亲：上一层的“父”（起初连到 cc 根；之后层层替换为上一层 parent）
-                # 为确保树结构正确：每个“children_cid”的原 parent 若为 cc 或某层 parent，
-                # 我们把新 parent 作为它们共同的父，并更新上一层结构
-                # 这里做法：找所有 children 的当前 parent（它们应相同），记为 old_parent
                 parents_of_children = {cluster_tree[ch]["parent"] for ch in children_cids}
                 assert len(parents_of_children) == 1, "内部错误：同层children的parent不唯一"
                 old_parent = list(parents_of_children)[0]
-                # 让 old_parent 的 children 中，移除这些 children，添加新 parent
+                cluster_tree[parent_cid]["parent"] = old_parent
+
                 new_children_list = []
                 for c in cluster_tree[old_parent]["children"]:
                     if c not in children_cids:
@@ -331,19 +307,18 @@ def build_hierarchical_supergraph_tree(
                 new_children_list.append(parent_cid)
                 cluster_tree[old_parent]["children"] = new_children_list
 
-                # 让这些 children 指向新的 parent
                 for ch in children_cids:
                     cluster_tree[ch]["parent"] = parent_cid
                     cluster_tree[parent_cid]["children"].append(ch)
 
-                # 更新“下一层”的原子
                 next_level_map[parent_cid] = nodes_union
+                hierarchy_levels[level].append(parent_cid)
 
-            # 进入下一层
             cur_level_map = next_level_map
             level += 1
 
-    return cluster_tree, node_to_leaf
+    levels_output = {lvl: list(ids) for lvl, ids in hierarchy_levels.items()}
+    return cluster_tree, node_to_leaf, levels_output
 
 
 # =========================================================
@@ -1243,6 +1218,16 @@ def print_parent_children_counts(cluster_tree):
         print(f"  [P] {_cid_str(cid)}  children={len(ch_list)}")
 
 
+def print_hierarchy_overview(levels_map: dict):
+    print("\n[Hierarchy Levels Overview]")
+    for lvl in sorted(levels_map.keys()):
+        nodes = levels_map[lvl]
+        preview = ", ".join(_cid_str(cid) for cid in nodes[:5])
+        if len(nodes) > 5:
+            preview += ", ..."
+        print(f"  level={lvl:<3} count={len(nodes):<5} sample=[{preview}]")
+
+
 # ---------- main ----------
 def main():
     ap = argparse.ArgumentParser()
@@ -1255,7 +1240,10 @@ def main():
     ap.add_argument("--base_max_cluster_size", type=int, default=500)
     ap.add_argument("--super_resolutions", type=str, default="0.8,0.6,0.45,0.3,0.2",
                     help="在超图上的逐层分辨率列表（逗号分隔），层序向上递减或保持")
-    ap.add_argument("--super_max_cluster_size", type=int, default=10**9)
+    ap.add_argument("--super_max_cluster_size", type=int, default=50,
+                    help="超图分层时 Leiden 的最大簇规模限制")
+    ap.add_argument("--supernode_threshold", type=int, default=50,
+                    help="若当前层超点数量大于该阈值则继续向上聚合")
     ap.add_argument("--hl_seed", type=int, default=42)
 
     ap.add_argument("--max_workers", type=int, default=None)
@@ -1293,15 +1281,17 @@ def main():
     # 1) 超图分层骨架（NEW）
     tALL0 = time.time()
     super_res_list = [float(x) for x in args.super_resolutions.split(",") if x.strip()]
-    cluster_tree, node_to_leaf = build_hierarchical_supergraph_tree(
+    cluster_tree, node_to_leaf, hierarchy_levels = build_hierarchical_supergraph_tree(
         G,
         base_resolution=args.base_resolution,
         base_max_cluster_size=args.base_max_cluster_size,
         super_resolutions=tuple(super_res_list),
         super_max_cluster_size=args.super_max_cluster_size,
+        supernode_threshold=args.supernode_threshold,
         seed=args.hl_seed
     )
 
+    print_hierarchy_overview(hierarchy_levels)
     # 输出：每个 parent 的直接 children 数量
     print_parent_children_counts(cluster_tree)
 
