@@ -538,10 +538,12 @@ def build_index_graphs_for_parents(
                 continue
             gates_list = list(gates)
             targets_set = set(gates_list)
+            gate_distances: dict = {}
 
             # 在 RG 上做单源到目标集的最短路（边权已是 PLL 距离）
             for src in gates_list:
                 dmap = _dijkstra_to_targets(RG, src, targets_set - {src})
+                gate_distances[src] = dmap or {}
                 if not dmap:
                     continue
                 items = list(dmap.items())
@@ -555,6 +557,66 @@ def build_index_graphs_for_parents(
                             IG[src][tgt]["weight"] = float(dist_val)
                     else:
                         IG.add_edge(src, tgt, weight=float(dist_val))
+
+            # 若 child 内网关节点的 kNN 图不连通，则利用最短路距离做快速连通
+            if len(gates_list) > 1:
+                induced = IG.subgraph(gates_list)
+                if not nx.is_connected(induced):
+                    components = list(nx.connected_components(induced))
+                    comp_index = {}
+                    for idx, comp in enumerate(components):
+                        for node in comp:
+                            comp_index[node] = idx
+
+                    parent = list(range(len(components)))
+
+                    def _find(i: int) -> int:
+                        while parent[i] != i:
+                            parent[i] = parent[parent[i]]
+                            i = parent[i]
+                        return i
+
+                    def _union(i: int, j: int) -> bool:
+                        fi, fj = _find(i), _find(j)
+                        if fi == fj:
+                            return False
+                        parent[fi] = fj
+                        return True
+
+                    edge_candidates = []
+                    seen_pairs = set()
+                    for u in gates_list:
+                        dmap = gate_distances.get(u, {})
+                        cu = comp_index.get(u)
+                        if cu is None:
+                            continue
+                        for v, dist_val in dmap.items():
+                            if not np.isfinite(dist_val):
+                                continue
+                            cv = comp_index.get(v)
+                            if cv is None or cu == cv:
+                                continue
+                            key = tuple(sorted((u, v), key=str))
+                            if key in seen_pairs:
+                                continue
+                            seen_pairs.add(key)
+                            edge_candidates.append((float(dist_val), u, v))
+
+                    heapq.heapify(edge_candidates)
+                    remaining = len(components)
+                    while edge_candidates and remaining > 1:
+                        dist_val, u, v = heapq.heappop(edge_candidates)
+                        cu = comp_index.get(u)
+                        cv = comp_index.get(v)
+                        if cu is None or cv is None:
+                            continue
+                        if _union(cu, cv):
+                            remaining -= 1
+                            if IG.has_edge(u, v):
+                                if dist_val < IG[u][v].get("weight", float("inf")):
+                                    IG[u][v]["weight"] = dist_val
+                            else:
+                                IG.add_edge(u, v, weight=dist_val)
 
         # child 之间：原图中的跨 child 边（只保留网关）
         all_gate = set().union(*gateway_by_child.values())
