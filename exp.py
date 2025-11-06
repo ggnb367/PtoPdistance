@@ -453,6 +453,84 @@ def build_leaves_tables(G: nx.Graph, cluster_tree: dict, max_workers=None):
 
 
 # ---------- Step3: 父层 index_graph（网关收缩 + 子簇内网关 kNN 闭包） ----------
+def _ensure_cluster_rep_graph(
+    G: nx.Graph,
+    cluster_tree: dict,
+    borders: dict,
+    rep_graphs: dict,
+    cid,
+):
+    """
+    确保任意层级的 cluster 都拥有边界点列表与 representative graph。
+
+    之前仅为叶子构建 rep_graph，这会导致更高层 parent 的子簇
+    （非叶）在 Step3 中没有可用的网关候选，从而上层 AB/L2 表为空。
+    这里在需要时动态补全：
+      - 计算该 cluster 的边界点（存在跨簇邻居的节点）。
+      - 在 cluster 内部执行 Dijkstra，得到边界点之间的最短路，
+        并用这些距离构建一个完全图作为 rep_graph。
+    """
+
+    RG = rep_graphs.get(cid)
+    border = borders.get(cid)
+
+    if RG is not None and border is not None:
+        return RG, border
+
+    node_set = cluster_tree[cid]["nodes"]
+    if not isinstance(node_set, set):
+        node_set = set(node_set)
+    else:
+        node_set = set(node_set)
+
+    if border is None:
+        border = [
+            n for n in node_set
+            if any((nbr not in node_set) for nbr in G[n])
+        ]
+        border = sorted(border, key=node_sort_key)
+        borders[cid] = border
+
+    if RG is not None:
+        return RG, border
+
+    RG = nx.Graph()
+    RG.add_nodes_from(border)
+    if len(border) > 1:
+        allowed = node_set
+        border_set = set(border)
+        for src in border:
+            dist = {}
+            seen = {src: 0.0}
+            heap = [(0.0, src)]
+            while heap:
+                d, u = heapq.heappop(heap)
+                if d != seen[u]:
+                    continue
+                if u in border_set and u != src:
+                    prev = dist.get(u)
+                    if prev is None or d < prev:
+                        dist[u] = d
+                for v, data in G[u].items():
+                    if v not in allowed:
+                        continue
+                    nd = d + float(data.get("weight", 1.0))
+                    if nd < seen.get(v, float("inf")):
+                        seen[v] = nd
+                        heapq.heappush(heap, (nd, v))
+            for tgt, d in dist.items():
+                if not np.isfinite(d):
+                    continue
+                if RG.has_edge(src, tgt):
+                    if d < RG[src][tgt].get("weight", float("inf")):
+                        RG[src][tgt]["weight"] = d
+                else:
+                    RG.add_edge(src, tgt, weight=float(d))
+
+    rep_graphs[cid] = RG
+    return RG, border
+
+
 def _dijkstra_to_targets(graph: nx.Graph, src, targets_set: set) -> dict:
     if src not in graph:
         return {}
@@ -507,8 +585,8 @@ def build_index_graphs_for_parents(
         child_to_nodes = {}
         node_to_child = {}
         for ch in children:
-            RG = rep_graphs.get(ch)
-            nodes_set = set(RG.nodes()) if RG is not None else set()
+            RG, border_nodes = _ensure_cluster_rep_graph(G, cluster_tree, borders, rep_graphs, ch)
+            nodes_set = set(border_nodes)
             child_to_nodes[ch] = nodes_set
             for x in nodes_set:
                 node_to_child[x] = ch
